@@ -3,6 +3,38 @@
 #include <vector>
 #include <sstream>
 #include <unordered_set>
+#include <cstdlib>
+#include <filesystem>
+
+#ifdef _WIN32
+#include <io.h>
+#define ACCESS _access
+#define X_OK 1
+static constexpr char kPathDelim = ';';
+#else
+#include <unistd.h>
+#define ACCESS access
+static constexpr char kPathDelim = ':';
+#endif
+
+namespace fs = std::filesystem;
+
+static bool is_executable_file(const fs::path &p)
+{
+	std::error_code ec;
+	auto st = fs::symlink_status(p, ec);
+	if (ec)
+		return false;
+	if (!(fs::is_regular_file(st) or fs::is_symlink(st)))
+		return false;
+	std::string ps = p.string();
+	return ACCESS(ps.c_str(), X_OK) == 0;
+}
+
+static bool contains_slash(const std::string &s)
+{
+	return s.find('/') != std::string::npos or s.find('\\') != std::string::npos;
+}
 
 int main()
 {
@@ -39,18 +71,62 @@ int main()
 		}
 		else if (command == "type")
 		{
-			// 期望格式 type <command>
-			if (tokens.size() >= 2)
+			// 无第二个 token
+			if (tokens.size() < 2)
 			{
-				std::string q = tokens[1];
-				if (builtin_commands.count(q))
-					std::cout << q << " is a shell builtin" << std::endl;
+				std::cout << ": not found" << std::endl;
+				continue;
+			}
+
+			std::string q = tokens[1];
+			// 先判断是否是 buildin
+			if (builtin_commands.count(q))
+			{
+				std::cout << q << " is a shell builtin" << std::endl;
+				continue;
+			}
+
+			// 若为路径
+			if (contains_slash(q))
+			{
+				fs::path p(q);
+				if (is_executable_file(p))
+				{
+					std::cout << q << " is " << p.string() << std::endl;
+				}
 				else
 					std::cout << q << ": not found" << std::endl;
 			}
-			// 否则直接输出 not found
-			else
-				std::cout << ": not found" << std::endl;
+
+			// 遍历PTAH的每个目录
+			const char *path_env = std::getenv("PATH");
+			std::string path_list = path_env ? std::string(path_env) : std::string();
+			bool found = false;
+			size_t start = 0;
+			while (true)
+			{
+				// 找到下一个分隔符
+				size_t end = path_list.find(kPathDelim, start);
+				// 截取目录
+				std::string dir = (end == std::string::npos) ? path_list.substr(start)
+															 : path_list.substr(start, end - start);
+				if (dir.empty())
+					dir = ".";
+				fs::path candidate = fs::path(dir) / q;
+				if (is_executable_file(candidate))
+				{
+					std::cout << q << " is " << candidate.string() << std::endl;
+					found = true;
+					break;
+				}
+				if (end == std::string::npos)
+					break;
+				start = end + 1;
+			}
+			if (!found)
+			{
+				std::cout << q << ": not found\n";
+			}
 		}
 		else
 			std::cout << command << ": command not found" << std::endl;
