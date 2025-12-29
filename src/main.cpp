@@ -13,9 +13,12 @@ int main()
 		std::cout << "$ ";
 		std::string input;
 		std::cin >> input;
-		if (input == "exit")
-		{
-			break;
+		if (input == "exit") break;
+		else if (input == "echo") {
+			std::string message;
+			std::cin >> message;
+			std::cout << message << std::endl;
+			continue;
 		}
 		std::cout << input << ": command not found" << std::endl;
 	}
