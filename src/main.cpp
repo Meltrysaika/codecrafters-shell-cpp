@@ -50,7 +50,7 @@ static std::string find_in_PATH(const std::string &cmd)
 		size_t end = path_list.find(kPathDelim, start);
 		// 截取目录
 		std::string dir = (end == std::string::npos) ? path_list.substr(start)
-														: path_list.substr(start, end - start);
+													 : path_list.substr(start, end - start);
 		if (dir.empty())
 			dir = ".";
 		fs::path candidate = fs::path(dir) / cmd;
@@ -65,13 +65,26 @@ static std::string find_in_PATH(const std::string &cmd)
 	return "";
 }
 
+static std::string get_cwd()
+{
+	char *cwd = getcwd(nullptr, 0);
+	if (cwd)
+	{
+		std::string res(cwd);
+		std::free(cwd); // 这块内存是libc malloc出来的，要手动free
+		return res;
+	}
+	else
+		return " "; // 获取失败
+}
+
 int main()
 {
 	// Flush after every std::cout / std:cerr
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
 
-	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type","pwd"};
+	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd"};
 
 	while (true)
 	{
@@ -90,38 +103,23 @@ int main()
 			return 0;
 		else if (command == "cd")
 		{
-			if (tokens.size()<2) continue; //缺少参数
+			if (tokens.size() < 2)
+				continue; // 缺少参数
 
 			const std::string &target = tokens[1];
-			if (!target.empty() and target[0] == '/')
+
+			std::string old_cwd = get_cwd();
+
+			if (chdir(target.c_str())!=0)
 			{
-				std::error_code ec;
-				bool ok_dir = fs::exists(target, ec) and fs::is_directory(target, ec) and !ec;
-				if (!ok_dir)
-				{
-					std::cout << "cd: " << target << ": No such file or directory" <<std::endl;
-          			continue;
-				}
-				if (chdir(target.c_str())!=0)
-				{
-					std::cout << "cd: " << target << ": No such file or directory" <<std::endl;
-				}
-				continue;
+				if (!old_cwd.empty()) (void)chdir(old_cwd.c_str());
+				std::cout << "cd: " << target << ": No such file or directory" << std::endl;
 			}
-			std::cout << "cd: " << target << ": No such file or directory" <<std::endl;
 		}
 		else if (command == "pwd")
 		{
-			char *cwd = getcwd(nullptr, 0);
-			if (cwd) 
-			{
-				std::cout<<cwd<<std::endl;
-				std::free(cwd); //这块内存是libc malloc出来的，要手动free
-			}
-			else // 获取失败
-			{
-				std::cout<<std::endl;
-			}
+			std::string cwd = get_cwd();
+			std::cout << cwd << std::endl;
 		}
 		else if (command == "echo")
 		{
@@ -184,29 +182,29 @@ int main()
 			// 这里fork创建了一个一模一样的进程
 			// 子进程返回0，表示自己是子进程
 			// 父进程返回子进程PID(>0)
-			pid_t pid = fork(); 
-			if (pid<0) //fork返回负值，创建子进程发生错误
+			pid_t pid = fork();
+			if (pid < 0) // fork返回负值，创建子进程发生错误
 			{
-				std::cerr<<"fork failed"<<std::endl;
+				std::cerr << "fork failed" << std::endl;
 				continue;
 			}
-			if (pid==0) //子进程
+			if (pid == 0) // 子进程
 			{
 				std::vector<char *> argv;
-				argv.reserve(tokens.size()+1);
-				for (auto &t:tokens)argv.push_back(const_cast<char *>(t.c_str()));
+				argv.reserve(tokens.size() + 1);
+				for (auto &t : tokens)
+					argv.push_back(const_cast<char *>(t.c_str()));
 				argv.push_back(nullptr);
 				execv(full_path.c_str(), argv.data());
 				// execv失败，没有进入新程序
 				std::cerr << cmd << ": exec failed\n";
-      			_exit(1);
+				_exit(1);
 			}
-			else //父进程
+			else // 父进程
 			{
 				int status = 0;
 				(void)waitpid(pid, &status, 0);
 			}
 		}
-			
 	}
 }
