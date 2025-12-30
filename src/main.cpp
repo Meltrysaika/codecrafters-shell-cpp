@@ -105,14 +105,26 @@ int main()
 		{
 			if (tokens.size() < 2)
 				continue; // 缺少参数
-
-			const std::string &target = tokens[1];
+			std::string &target = tokens[1];
+			if (target == "~")
+			{
+				const char *home = std::getenv("HOME");
+				// 先判断home不是空指针，然后判断*home不是空字符串
+				if (home and *home)
+					target = home;
+				else
+				{
+					std::cout << "cd: ~: No such file or directory" << std::endl;
+					continue;
+				}
+			}
 
 			std::string old_cwd = get_cwd();
 
-			if (chdir(target.c_str())!=0)
+			if (chdir(target.c_str()) != 0)
 			{
-				if (!old_cwd.empty()) (void)chdir(old_cwd.c_str());
+				if (!old_cwd.empty())
+					(void)chdir(old_cwd.c_str());
 				std::cout << "cd: " << target << ": No such file or directory" << std::endl;
 			}
 		}
