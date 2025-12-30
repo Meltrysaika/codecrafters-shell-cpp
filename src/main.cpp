@@ -71,7 +71,7 @@ int main()
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
 
-	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type"};
+	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type","pwd"};
 
 	while (true)
 	{
@@ -88,6 +88,19 @@ int main()
 		std::string command = tokens[0];
 		if (command == "exit")
 			return 0;
+		else if (command == "pwd")
+		{
+			char *cwd = getcwd(nullptr, 0);
+			if (cwd) 
+			{
+				std::cout<<cwd<<std::endl;
+				std::free(cwd); //这块内存是libc malloc出来的，要手动free
+			}
+			else // 获取失败
+			{
+				std::cout<<std::endl;
+			}
+		}
 		else if (command == "echo")
 		{
 			for (size_t i = 1; i < tokens.size(); i++)
