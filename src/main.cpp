@@ -80,37 +80,109 @@ static std::string get_cwd()
 
 static std::vector<std::string> parse_line(const std::string &line)
 {
+	enum class Mode
+	{
+		OUT,
+		IN_SQ,
+		IN_DQ
+	};
+	Mode mode = Mode::OUT;
+	// OUT 引号外
+	//  空白分隔参数，连续空白折叠
+	//  反斜杠转义下一个字符，被转义字符作为字面量
+
+	// IN_SQ 单引号内
+	// 一切都是自变量，反斜杠不转义
+
+	// IN_DQ 双引号内
+	// 字面量为主，空白保留
+	// 反斜杠只转义\"和\\ ，其他反斜杠保留
 	std::vector<std::string> out;
 	std::string cur;
-	bool in_sq = false; //是否在单引号内部
 	bool token_active = false;
 
-	for (char ch:line)
+	for (int i = 0; i < line.size(); i++)
 	{
+		char ch = line[i];
 		unsigned char c = static_cast<unsigned>(ch);
 
-		if (in_sq)
+		if (mode == Mode::OUT)
 		{
-			if (ch == '\'') in_sq=false;
-			else{
-				cur.push_back(ch);
+			if (ch == '\'')
+			{
+				mode = Mode::IN_SQ;
 				token_active = true;
 			}
-		}
-		else
-		{
-			if (ch=='\'')
+			else if (ch == '\"')
 			{
-				in_sq=true;
-				token_active=true;
+				mode = Mode::IN_DQ;
+				token_active = true;
 			}
-			else if (std::isspace(c)) //引号外的空白，结束当前token
+			else if (ch == '\\')
+			{
+				if (i + 1 < line.size())
+				{
+					char nxt = line[i + 1];
+					cur.push_back(nxt);
+					token_active = true;
+					i++;
+				}
+				else
+				{
+					cur.push_back('\\'); // 保守一点当字面量吧，续行太难写了
+					token_active = true;
+				}
+			}
+			else if (std::isspace(c))
 			{
 				if (token_active)
 				{
 					out.push_back(cur);
 					cur.clear();
-					token_active=false;
+					token_active = false;
+				}
+			}
+			else
+			{
+				cur.push_back(ch);
+				token_active = true;
+			}
+		}
+		else if (mode == Mode::IN_SQ)
+		{
+			if (ch == '\'')
+				mode = Mode::OUT;
+			else
+			{
+				cur.push_back(ch);
+				token_active = true;
+			}
+		}
+		else // mode == Mode::IN_DQ
+		{
+			if (ch == '\"')
+				mode = Mode::OUT;
+			else if (ch == '\\')
+			{
+				if (i + 1 < line.size())
+				{
+					char nxt = line[i + 1];
+					if (nxt == '\\' or nxt == '\"')
+					{
+						cur.push_back(nxt);
+						token_active = true;
+						i++;
+					}
+					else
+					{
+						cur.push_back('\\');
+						token_active = true;
+					}
+				}
+				else
+				{
+					cur.push_back('\\'); // 保守一点当字面量吧，续行太难写了
+					token_active = true;
 				}
 			}
 			else
@@ -120,8 +192,9 @@ static std::vector<std::string> parse_line(const std::string &line)
 			}
 		}
 	}
-	//行末仍有token
-	if (token_active) out.push_back(cur);
+	// 行末仍有token
+	if (token_active)
+		out.push_back(cur);
 	return out;
 }
 
@@ -131,7 +204,7 @@ int main()
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
 
-	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd","cd"};
+	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd", "cd"};
 
 	while (true)
 	{
