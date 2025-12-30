@@ -88,6 +88,28 @@ int main()
 		std::string command = tokens[0];
 		if (command == "exit")
 			return 0;
+		else if (command == "cd")
+		{
+			if (tokens.size()<2) continue; //缺少参数
+
+			const std::string &target = tokens[1];
+			if (!target.empty() and target[0] == '/')
+			{
+				std::error_code ec;
+				bool ok_dir = fs::exists(target, ec) and fs::is_directory(target, ec) and !ec;
+				if (!ok_dir)
+				{
+					std::cout << "cd: " << target << ": No such file or directory" <<std::endl;
+          			continue;
+				}
+				if (chdir(target.c_str())!=0)
+				{
+					std::cout << "cd: " << target << ": No such file or directory" <<std::endl;
+				}
+				continue;
+			}
+			std::cout << "cd: " << target << ": No such file or directory" <<std::endl;
+		}
 		else if (command == "pwd")
 		{
 			char *cwd = getcwd(nullptr, 0);
