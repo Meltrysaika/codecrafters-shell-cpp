@@ -8,11 +8,13 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <windows.h>
 #define ACCESS _access
 #define X_OK 1
 static constexpr char kPathDelim = ';';
 #else
 #include <unistd.h>
+#include <sys/wait.h>
 #define ACCESS access
 static constexpr char kPathDelim = ':';
 #endif
@@ -34,6 +36,33 @@ static bool is_executable_file(const fs::path &p)
 static bool contains_slash(const std::string &s)
 {
 	return s.find('/') != std::string::npos or s.find('\\') != std::string::npos;
+}
+
+static std::string find_in_PATH(const std::string &cmd)
+{
+	// 遍历PTAH的每个目录
+	const char *path_env = std::getenv("PATH");
+	std::string path_list = path_env ? std::string(path_env) : std::string();
+	size_t start = 0;
+	while (true)
+	{
+		// 找到下一个分隔符
+		size_t end = path_list.find(kPathDelim, start);
+		// 截取目录
+		std::string dir = (end == std::string::npos) ? path_list.substr(start)
+														: path_list.substr(start, end - start);
+		if (dir.empty())
+			dir = ".";
+		fs::path candidate = fs::path(dir) / cmd;
+		if (is_executable_file(candidate))
+		{
+			return candidate.string();
+		}
+		if (end == std::string::npos)
+			break;
+		start = end + 1;
+	}
+	return "";
 }
 
 int main()
@@ -58,7 +87,7 @@ int main()
 			continue;
 		std::string command = tokens[0];
 		if (command == "exit")
-			break;
+			return 0;
 		else if (command == "echo")
 		{
 			for (size_t i = 1; i < tokens.size(); i++)
@@ -98,37 +127,51 @@ int main()
 					std::cout << q << ": not found" << std::endl;
 			}
 
-			// 遍历PTAH的每个目录
-			const char *path_env = std::getenv("PATH");
-			std::string path_list = path_env ? std::string(path_env) : std::string();
-			bool found = false;
-			size_t start = 0;
-			while (true)
+			std::string res = find_in_PATH(q);
+			if (!res.empty())
 			{
-				// 找到下一个分隔符
-				size_t end = path_list.find(kPathDelim, start);
-				// 截取目录
-				std::string dir = (end == std::string::npos) ? path_list.substr(start)
-															 : path_list.substr(start, end - start);
-				if (dir.empty())
-					dir = ".";
-				fs::path candidate = fs::path(dir) / q;
-				if (is_executable_file(candidate))
-				{
-					std::cout << q << " is " << candidate.string() << std::endl;
-					found = true;
-					break;
-				}
-				if (end == std::string::npos)
-					break;
-				start = end + 1;
+				std::cout << q << " is " << res << std::endl;
 			}
-			if (!found)
+			else
 			{
 				std::cout << q << ": not found\n";
 			}
 		}
 		else
-			std::cout << command << ": command not found" << std::endl;
+		{
+			const std::string &cmd = tokens[0];
+			std::string full_path = find_in_PATH(cmd);
+			if (full_path.empty())
+			{
+				std::cout << command << ": command not found" << std::endl;
+				continue;
+			}
+			// 这里fork创建了一个一模一样的进程
+			// 子进程返回0，表示自己是子进程
+			// 父进程返回子进程PID(>0)
+			pid_t pid = fork(); 
+			if (pid<0) //fork返回负值，创建子进程发生错误
+			{
+				std::cerr<<"fork failed"<<std::endl;
+				continue;
+			}
+			if (pid==0) //子进程
+			{
+				std::vector<char *> argv;
+				argv.reserve(tokens.size()+1);
+				for (auto &t:tokens)argv.push_back(const_cast<char *>(t.c_str()));
+				argv.push_back(nullptr);
+				execv(full_path.c_str(), argv.data());
+				// execv失败，没有进入新程序
+				std::cerr << cmd << ": exec failed\n";
+      			_exit(1);
+			}
+			else //父进程
+			{
+				int status = 0;
+				(void)waitpid(pid, &status, 0);
+			}
+		}
+			
 	}
 }
