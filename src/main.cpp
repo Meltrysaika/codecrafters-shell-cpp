@@ -78,24 +78,68 @@ static std::string get_cwd()
 		return " "; // 获取失败
 }
 
+static std::vector<std::string> parse_line(const std::string &line)
+{
+	std::vector<std::string> out;
+	std::string cur;
+	bool in_sq = false; //是否在单引号内部
+	bool token_active = false;
+
+	for (char ch:line)
+	{
+		unsigned char c = static_cast<unsigned>(ch);
+
+		if (in_sq)
+		{
+			if (ch == '\'') in_sq=false;
+			else{
+				cur.push_back(ch);
+				token_active = true;
+			}
+		}
+		else
+		{
+			if (ch=='\'')
+			{
+				in_sq=true;
+				token_active=true;
+			}
+			else if (std::isspace(c)) //引号外的空白，结束当前token
+			{
+				if (token_active)
+				{
+					out.push_back(cur);
+					cur.clear();
+					token_active=false;
+				}
+			}
+			else
+			{
+				cur.push_back(ch);
+				token_active = true;
+			}
+		}
+	}
+	//行末仍有token
+	if (token_active) out.push_back(cur);
+	return out;
+}
+
 int main()
 {
 	// Flush after every std::cout / std:cerr
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
 
-	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd"};
+	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd","cd"};
 
 	while (true)
 	{
 		std::cout << "$ ";
 		std::string line;
 		std::getline(std::cin, line);
-		std::istringstream iss(line);
-		std::vector<std::string> tokens;
+		std::vector<std::string> tokens = parse_line(line);
 
-		for (std::string s; iss >> s;)
-			tokens.push_back(s);
 		if (tokens.empty())
 			continue;
 		std::string command = tokens[0];
