@@ -8,6 +8,11 @@
 #include <optional>
 #include <cctype>
 
+#include <readline/history.h>
+#include <readline/readline.h>
+
+#include "trie.h"
+
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
