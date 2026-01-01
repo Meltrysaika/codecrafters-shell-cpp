@@ -27,6 +27,8 @@ static constexpr char kPathDelim = ';';
 static constexpr char kPathDelim = ':';
 #endif
 
+static constexpr char Bell = '\x07'; // 响铃
+
 namespace fs = std::filesystem;
 
 enum class Token_Kind
@@ -267,7 +269,7 @@ static void extract_redirections(std::vector<Token> &tokens,
 								 std::optional<std::string> &stderr_path,
 								 bool &stderr_append)
 {
-	for (size_t i = 0; i < tokens.size(); )
+	for (size_t i = 0; i < tokens.size();)
 	{
 		Token_Kind kind = tokens[i].kind;
 		bool is_stdout = (kind == Token_Kind::Trunc_Stdout or kind == Token_Kind::Append_Stdout);
@@ -365,19 +367,231 @@ struct Stderr_Rirect_Guard // 临时重定向stderr
 	}
 };
 
+static const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd", "cd"};
+
+struct AutoCompletionCache
+{
+	Trie trie;
+	std::string cached_path;
+	std::vector<std::string> dirs;
+	std::vector<std::optional<fs::file_time_type>> dir_last_write_time;
+	std::unordered_set<std::string> seen; // 去重，可执行文件只插入一次
+
+	// PATH 切分成目录数组
+	static std::vector<std::string> split_PATH(const std::string &path_list)
+	{
+		std::vector<std::string> out;
+		size_t start = 0;
+		while (true)
+		{
+			size_t end = path_list.find(kPathDelim, start);
+			std::string dir = (end == std::string::npos) ? path_list.substr(start) : path_list.substr(start, end - start);
+			if (dir.empty())
+				dir = ".";
+			out.push_back(dir);
+			if (end == std::string::npos)
+				break;
+			start = end + 1;
+		}
+		return out;
+	}
+
+	// 读取目录最后修改时间
+	static std::optional<fs::file_time_type> get_dir_last_write_time(const std::string &dir)
+	{
+		std::error_code ec;
+		if (!fs::exists(dir, ec) or ec)
+			return std::nullopt;
+		if (!fs::is_directory(dir, ec) or ec)
+			return std::nullopt;
+		auto t = fs::last_write_time(dir, ec);
+		if (ec)
+			return std::nullopt;
+		return t;
+	}
+
+	// 判断是否需要重建， PATH 变了或者 某个目录发生了变化
+	bool need_rebuild(const std::string &current_path) const
+	{
+		if (current_path != cached_path)
+			return true;
+		auto cur_dirs = split_PATH(current_path);
+		if (cur_dirs.size() != dirs.size())
+			return true;
+		for (size_t i = 0; i < cur_dirs.size(); i++)
+		{
+			if (cur_dirs[i] != dirs[i])
+				return true;
+			auto last_time = get_dir_last_write_time(cur_dirs[i]);
+			if (last_time.has_value() != dir_last_write_time[i].has_value())
+				return true;
+			if (last_time.has_value() and dir_last_write_time[i].has_value() and last_time.value() != dir_last_write_time[i].value())
+				return true;
+		}
+		return false;
+	}
+
+	// 重建 Trie
+	void rebuild(const std::string &current_path)
+	{
+		cached_path = current_path;
+		dirs = split_PATH(current_path);
+		dir_last_write_time.clear();
+		dir_last_write_time.reserve(dirs.size());
+
+		trie.clear();
+		seen.clear();
+		for (const auto &s : builtin_commands)
+		{
+			trie.insert(s);
+			seen.insert(s);
+		}
+
+		for (const auto &dir : dirs)
+		{
+			dir_last_write_time.push_back(get_dir_last_write_time(dir));
+			std::error_code ec;
+			fs::directory_iterator it(dir, ec), endit;
+			if (ec)
+				continue;
+			while (!ec and it != endit)
+			{
+				fs::path p = it->path();
+				std::string name = p.filename().string();
+				if (!name.empty() and seen.insert(name).second)
+				{
+					if (is_executable_file(p))
+					trie.insert(name);
+					else
+						seen.erase(name);
+				}
+				it.increment(ec);
+			}
+		}
+	}
+
+	void ensure_up_to_date()
+	{
+		const char *env = std::getenv("PATH");
+		std::string current_path = env ? std::string(env) : std::string();
+		if (cached_path.empty() or need_rebuild(current_path))
+			rebuild(current_path);
+	}
+};
+
+static AutoCompletionCache g_completion_cache;
+
+static bool g_table_pending = false; // 是否已经按过一次 Tab
+static std::string g_pending_prefix; // 第一次 Tab 时输入的前缀
+static std::string g_pending_buffer; // 第一次 Tab 时整行缓冲区内容。
+static int g_pending_point = 0; // 第一次 Tab 时光标位置
+static std::vector<std::string> g_pending_matches; //第一次 Tab 时计算好的候选列表，第二次 Tab 直接打印
+
+// 只有一个匹配时得到完整单词
+static std::optional<std::string> get_unique_match (const std::string &prefix) 
+{
+	auto v = g_completion_cache.trie.list_with_prefix(prefix, 1);
+	if (v.size() == 1) return v[0];
+	else return std::nullopt;
+}
+
+static int tab_handler(int count, int key)
+{
+	g_completion_cache.ensure_up_to_date();
+	std::string buf = rl_line_buffer ? std::string(rl_line_buffer) : std::string();
+	int point = rl_point;
+
+	// 暂时只补全指令，在输入其他参数的时候先不管
+	size_t first_space = buf.find_first_of(" \t");
+	if (first_space != std::string::npos and point > (int)first_space)
+	{
+		g_table_pending = false;
+		return 0;
+	}
+
+	std::string prefix = buf.substr(0, (size_t)point);
+	int cnt = g_completion_cache.trie.count_with_prefix(prefix);
+	if (cnt == 0)
+	{
+		std::cout<<Bell<<std::flush;
+		g_table_pending = false;
+		return 0;
+	}
+	else if (cnt == 1)
+	{
+		auto res = get_unique_match(prefix);
+		if (res.has_value())
+		{
+			rl_delete_text(0, point);
+			rl_point = 0;
+			std::string s = *res + " ";
+			rl_insert_text(s.c_str());
+			rl_point = (int)s.size();
+			rl_redisplay();
+		}
+		g_table_pending = false;
+		return 0;
+	}
+	// 多匹配，先用LCP推进
+	std::string lcp = g_completion_cache.trie.LCP_for_prefix(prefix);
+	if (lcp.size() > prefix.size())
+	{
+		rl_delete_text(0, point);
+		rl_point = 0;
+		rl_insert_text(lcp.c_str()); //仍有多个匹配，不加空格
+		rl_point = (int)lcp.size();
+		rl_redisplay();
+		g_table_pending = false;
+		return 0;
+	}
+	// LCP无法推进，响铃 / 列表
+	bool second_tab = g_table_pending and
+					  prefix == g_pending_prefix and
+					  buf == g_pending_buffer and	
+					  point == g_pending_point;
+	if (!second_tab)
+	{
+		std::cout<<Bell<<std::flush;
+		g_table_pending = true;
+		g_pending_prefix = prefix;
+		g_pending_buffer = buf;
+		g_pending_point = point;
+		g_pending_matches = g_completion_cache.trie.list_with_prefix(prefix);
+		return 0;
+	}
+	//第二次 Tab 打印所有匹配项
+	std::cout<<std::endl;
+	for (size_t i=0;i<g_pending_matches.size();i++)
+	{
+		if (i) std::cout << "  ";
+    	std::cout << g_pending_matches[i];
+	}
+	std::cout<<std::endl;
+	rl_on_new_line();
+	rl_redisplay();
+	g_table_pending = false;
+	return 0;
+}
+
+
 int main()
 {
 	// Flush after every std::cout / std:cerr
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
 
-	const std::unordered_set<std::string> builtin_commands = {"echo", "exit", "type", "pwd", "cd"};
+	rl_bind_key('\t', tab_handler);
 
 	while (true)
 	{
-		std::cout << "$ ";
-		std::string line;
-		std::getline(std::cin, line);
+		char* raw = readline("$ ");
+		if (!raw) break; //EOF
+		std::string line(raw);
+		std::free(raw);
+
+		g_table_pending = false;
+		if (!line.empty()) add_history(line.c_str());
+		
 		std::vector<Token> tokens = parse_line(line);
 		if (tokens.empty())
 			continue;
@@ -390,11 +604,12 @@ int main()
 		extract_redirections(tokens, stdout_path, stdout_append, stderr_path, stderr_append); // 去除重定向相关的，最后只剩arg参数
 
 		std::vector<std::string> args = tokens_to_words(tokens);
-		if (args.empty()) continue;
+		if (args.empty())
+			continue;
 
 		std::string command = args[0];
 
-		if (builtin_commands.count(command)) 
+		if (builtin_commands.count(command))
 		{
 			// 对于内置指令的重定向
 			Stdout_Rirect_Guard out_guard;
